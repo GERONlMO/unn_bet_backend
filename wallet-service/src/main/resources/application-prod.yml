@@ -1,0 +1,7 @@
+# Prod: Yandex Managed Kafka (SASL SCRAM-SHA-512). Local docker-compose uses default profile without SASL.
+spring:
+  kafka:
+    properties:
+      security.protocol: SASL_PLAINTEXT
+      sasl.mechanism: SCRAM-SHA-512
+      sasl.jaas.config: org.apache.kafka.common.security.scram.ScramLoginModule required username="${KAFKA_USER}" password="${KAFKA_PASSWORD}";

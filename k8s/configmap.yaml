@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: unn-bet-config
+data:
+  # Managed DB Hosts
+  POSTGRES_HOST: "c-c9qi1dft4uj6b062d8hj.rw.mdb.yandexcloud.net"
+  REDIS_HOST: "rc1a-rmsm7uis8ctej4tq.mdb.yandexcloud.net"
+  # Yandex Managed Kafka (SASL SCRAM-SHA-512, port 9092 within VPC)
+  KAFKA_HOST: "rc1a-lkfgjde81obpmscu.mdb.yandexcloud.net:9092"
+  # Internal service names (resolvable via K8s DNS)
+  AUTH_SERVICE_HOST: "auth-service"
+  WALLET_SERVICE_HOST: "wallet-service"
+  GAME_SERVICE_HOST: "game-service"
+  LOBBY_SERVICE_HOST: "lobby-service"
+  INTERNAL_SERVICE_TOKEN: "dev-internal-token-k8s-prod"
+  APP_ADMIN_USERNAMES: "admin"

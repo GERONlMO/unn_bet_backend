@@ -1,0 +1,174 @@
+stages:
+  - build
+  - test
+  - docker-push
+  - deploy-prod
+  - integration-test
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: ""
+  # Docker in Docker needs to communicate over TCP when DOCKER_TLS_CERTDIR is empty
+  DOCKER_HOST: tcp://docker:2375
+  YC_FEDERATION_ID: "ajeahde5ps0pfp9tssea"
+  YC_SERVICE_ACCOUNT_ID: "ajersofgl73qqpa00968"
+  YC_REGISTRY_ID: "crp7u5ca8scqv2912llu"
+  K8S_SERVER_IP: "https://81.26.176.206"
+  INTEGRATION_TEST_PROJECT_ID: "82739590"
+
+compile-java:
+  stage: build
+  image: maven:3.9.5-eclipse-temurin-17
+  script:
+    - mvn clean compile
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+unit-tests:
+  stage: test
+  image: maven:3.9.5-eclipse-temurin-17
+  script:
+    - mvn clean test -Djacoco.skip=true
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+coverage:
+  stage: test
+  image: maven:3.9.5-eclipse-temurin-17
+  script:
+    - mvn clean test
+    - >-
+      awk -F"," 'FNR>1 { instructions += $4 + $5; covered += $5 } END { if (instructions > 0) cov = 100*covered/instructions; else cov = 0; print "Total coverage: " cov " %"; if (cov < 75) { print "Coverage is below 75%!"; exit 1 } }' */target/site/jacoco/jacoco.csv
+  coverage: '/Total coverage: \d+\.\d+ %/'
+  allow_failure: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+build-and-push-docker:
+  stage: docker-push
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  id_tokens:
+    YC_OIDC_TOKEN:
+      aud: https://gitlab.com
+  before_script:
+    - apk add --no-cache curl jq
+    - 'RAW_RESPONSE=$(curl -sH "Content-Type: application/x-www-form-urlencoded" -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&requested_token_type=urn:ietf:params:oauth:token-type:access_token&audience=${YC_SERVICE_ACCOUNT_ID}&subject_token=${YC_OIDC_TOKEN}&subject_token_type=urn:ietf:params:oauth:token-type:id_token" -X POST https://auth.yandex.cloud/oauth/token)'
+    - echo "Response from Yandex $RAW_RESPONSE"
+    - 'export IAM_TOKEN=$(echo "$RAW_RESPONSE" | jq -r ''.access_token'')'
+    - while ! docker info > /dev/null 2>&1; do echo "Waiting for docker daemon..."; sleep 2; done
+    - echo "$IAM_TOKEN" | docker login --username iam --password-stdin cr.yandex
+  script:
+    - apk add --no-cache maven openjdk17
+    - mvn package -DskipTests
+    - for svc in auth-service wallet-service game-service gateway-service lobby-service; do
+    -   docker build -t cr.yandex/$YC_REGISTRY_ID/$svc:$CI_COMMIT_SHA ./$svc
+    -   docker push cr.yandex/$YC_REGISTRY_ID/$svc:$CI_COMMIT_SHA
+    - done
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG =~ /^v.*/
+
+deploy-prod:
+  stage: deploy-prod
+  image: alpine:3.19
+  id_tokens:
+    YC_OIDC_TOKEN:
+      aud: https://gitlab.com
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  before_script:
+    - apk add --no-cache curl jq
+    - curl -LO "https://dl.k8s.io/release/v1.28.3/bin/linux/amd64/kubectl"
+    - chmod +x kubectl
+    - mv kubectl /usr/local/bin/
+    - 'RAW_RESPONSE=$(curl -sH "Content-Type: application/x-www-form-urlencoded" -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&requested_token_type=urn:ietf:params:oauth:token-type:access_token&audience=${YC_SERVICE_ACCOUNT_ID}&subject_token=${YC_OIDC_TOKEN}&subject_token_type=urn:ietf:params:oauth:token-type:id_token" -X POST https://auth.yandex.cloud/oauth/token)'
+    - echo "Response from Yandex $RAW_RESPONSE"
+    - 'export IAM_TOKEN=$(echo "$RAW_RESPONSE" | jq -r ''.access_token'')'
+    - kubectl config set-cluster yc --server=${K8S_SERVER_IP} --insecure-skip-tls-verify=true
+    - kubectl config set-credentials iam --token="$IAM_TOKEN"
+    - kubectl config set-context yc --cluster=yc --user=iam
+    - kubectl config use-context yc
+  script:
+    - cd k8s/
+    - for file in auth-service.yaml wallet-service.yaml game-service.yaml gateway-service.yaml lobby-service.yaml; do
+    -   sed -i "s|<REGISTRY_ID>|$YC_REGISTRY_ID|g" $file
+    -   sed -i "s|:latest|:$CI_COMMIT_SHA|g" $file
+    - done
+    - for file in auth-service.yaml wallet-service.yaml game-service.yaml gateway-service.yaml lobby-service.yaml configmap.yaml redis-lobby-maintenance.yaml pdb.yaml; do
+    -   kubectl apply -f $file -n default
+    - done
+    - kubectl apply -f monitoring.yaml
+
+deploy-integration-test:
+  stage: integration-test
+  image: alpine:3.19
+  needs: ["deploy-prod"]
+  id_tokens:
+    YC_OIDC_TOKEN:
+      aud: https://gitlab.com
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - |
+      apk add --no-cache curl jq
+      curl -LO "https://dl.k8s.io/release/v1.28.3/bin/linux/amd64/kubectl"
+      chmod +x kubectl && mv kubectl /usr/local/bin/
+      RAW_RESPONSE=$(curl -sH "Content-Type: application/x-www-form-urlencoded" \
+        -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&requested_token_type=urn:ietf:params:oauth:token-type:access_token&audience=${YC_SERVICE_ACCOUNT_ID}&subject_token=${YC_OIDC_TOKEN}&subject_token_type=urn:ietf:params:oauth:token-type:id_token" \
+        -X POST https://auth.yandex.cloud/oauth/token)
+      IAM_TOKEN=$(echo "$RAW_RESPONSE" | jq -r '.access_token')
+      kubectl config set-cluster yc --server="${K8S_SERVER_IP}" --insecure-skip-tls-verify=true
+      kubectl config set-credentials iam --token="${IAM_TOKEN}"
+      kubectl config set-context yc --cluster=yc --user=iam
+      kubectl config use-context yc
+      for svc in auth-service wallet-service lobby-service game-service gateway-service; do
+        kubectl set image deployment/$svc $svc=cr.yandex/${YC_REGISTRY_ID}/$svc:${CI_COMMIT_SHA} -n integration-test
+        kubectl rollout status deployment/$svc -n integration-test --timeout=180s
+      done
+
+trigger-integration-tests:
+  stage: integration-test
+  image: alpine:3.19
+  needs: ["deploy-integration-test"]
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - apk add --no-cache curl jq
+    - |
+      if [ -z "$INTEGRATION_TEST_TRIGGER_TOKEN" ]; then
+        echo "INTEGRATION_TEST_TRIGGER_TOKEN is not set."
+        echo "Create a pipeline trigger token in unn_bet_integration_test (Settings -> CI/CD -> Pipeline trigger tokens)."
+        exit 1
+      fi
+      RESPONSE=$(curl -s --fail -X POST \
+        -F "token=${INTEGRATION_TEST_TRIGGER_TOKEN}" \
+        -F "ref=main" \
+        "https://gitlab.com/api/v4/projects/${INTEGRATION_TEST_PROJECT_ID}/trigger/pipeline")
+      PIPELINE_ID=$(echo "$RESPONSE" | jq -r '.id')
+      WEB_URL=$(echo "$RESPONSE" | jq -r '.web_url')
+      echo "Triggered integration test pipeline #${PIPELINE_ID}: ${WEB_URL}"
+      TIMEOUT=1800
+      ELAPSED=0
+      while [ "$ELAPSED" -lt "$TIMEOUT" ]; do
+        STATUS=$(curl -s --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          "https://gitlab.com/api/v4/projects/${INTEGRATION_TEST_PROJECT_ID}/pipelines/${PIPELINE_ID}" \
+          | jq -r '.status // empty')
+        if [ -z "$STATUS" ]; then
+          echo "Could not read downstream pipeline status. Allow this project in unn_bet_integration_test job token permissions, or check the pipeline manually."
+          exit 0
+        fi
+        echo "Downstream pipeline status: ${STATUS}"
+        case "$STATUS" in
+          success) exit 0 ;;
+          failed|canceled|skipped)
+            echo "Integration test pipeline failed: ${WEB_URL}"
+            exit 1
+            ;;
+        esac
+        sleep 30
+        ELAPSED=$((ELAPSED + 30))
+      done
+      echo "Timeout waiting for integration test pipeline: ${WEB_URL}"
+      exit 1

@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UNN-Bet Poker Test Client</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .panel { border: 1px solid #ccc; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
+        input, button { margin: 5px 0; padding: 5px; }
+        #log { background: #f4f4f4; padding: 10px; height: 400px; overflow-y: scroll; font-family: monospace; }
+        .log-entry { margin-bottom: 10px; border-bottom: 1px solid #ddd; padding-bottom: 5px; }
+        .json-tree { margin-left: 20px; }
+        details { cursor: pointer; }
+        summary { font-weight: bold; color: #0056b3; }
+    </style>
+</head>
+<body>
+
+<h1>UNN-Bet Poker Test Client</h1>
+
+<div class="panel">
+    <h3>1. Auth</h3>
+    <input type="text" id="username" placeholder="Username">
+    <input type="password" id="password" placeholder="Password">
+    <button onclick="register()">Register</button>
+    <button onclick="login()">Login</button>
+    <p>Token: <span id="tokenDisplay">None</span></p>
+</div>
+
+<div class="panel">
+    <h3>2. Lobby</h3>
+    <button onclick="getRooms()">Get All Rooms</button>
+    <br>
+    <input type="text" id="roomName" placeholder="Room Name">
+    <input type="number" id="maxPlayers" placeholder="Max Players (2-6)" min="2" max="6" value="6">
+    <select id="minBet">
+        <option value="10">Min Bet: 10</option>
+        <option value="50">Min Bet: 50</option>
+        <option value="100">Min Bet: 100</option>
+    </select>
+    <select id="turnTimeLimit">
+        <option value="30000">Normal Game (30s)</option>
+        <option value="15000">Fast Game (15s)</option>
+    </select>
+    <button onclick="createRoom()">Create Room</button>
+    <br>
+    <input type="text" id="joinRoomName" placeholder="Room Name to Join">
+    <button onclick="joinRoom()">Join Room</button>
+    <button onclick="leaveRoom()">Leave Room</button>
+    <br>
+    <input type="number" id="seatNumber" placeholder="Seat Number (0-5)" min="0" max="5">
+    <button onclick="takeSeat()">Take Seat</button>
+    <button id="readyBtn" onclick="setReady(true)">Ready</button>
+    <button id="notReadyBtn" onclick="setReady(false)">Not Ready</button>
+</div>
+
+<div class="panel">
+    <h3>3. Game Actions</h3>
+    <button onclick="gameAction('fold')">Fold</button>
+    <button onclick="gameAction('check')">Check</button>
+    <button onclick="gameAction('call')">Call</button>
+    <input type="number" id="raiseAmount" placeholder="Amount">
+    <button onclick="gameAction('raise')">Raise</button>
+</div>
+
+<div class="panel">
+    <h3>Game State (SSE)</h3>
+    <div id="log"></div>
+</div>
+
+<script>
+    let token = '';
+    let currentRoomId = '';
+    let eventSource = null;
+
+    const API_URL = 'http://localhost:8080/api';
+
+    function createJsonTree(obj) {
+        if (typeof obj !== 'object' || obj === null) {
+            return `<span>${JSON.stringify(obj)}</span>`;
+        }
+        
+        let html = '<div class="json-tree">';
+        for (const key in obj) {
+            const val = obj[key];
+            if (typeof val === 'object' && val !== null) {
+                const isArray = Array.isArray(val);
+                const bracketOpen = isArray ? '[' : '{';
+                const bracketClose = isArray ? ']' : '}';
+                html += `<details open><summary>${key}: ${bracketOpen}</summary>${createJsonTree(val)}<div>${bracketClose}</div></details>`;
+            } else {
+                html += `<div><strong>${key}:</strong> ${JSON.stringify(val)}</div>`;
+            }
+        }
+        html += '</div>';
+        return html;
+    }
+
+    function log(msg, dataObj = null) {
+        const logDiv = document.getElementById('log');
+        let content = `<strong>${new Date().toLocaleTimeString()} - ${msg}</strong>`;
+        if (dataObj) {
+            content += createJsonTree(dataObj);
+        }
+        logDiv.innerHTML += `<div class="log-entry">${content}</div>`;
+        logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    async function fetchApi(path, method = 'GET', body = null) {
+        const headers = { 'Content-Type': 'application/json' };
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+        
+        const options = { method, headers };
+        if (body) options.body = JSON.stringify(body);
+
+        try {
+            const res = await fetch(`${API_URL}${path}`, options);
+            const text = await res.text();
+            try {
+                return JSON.parse(text);
+            } catch (e) {
+                return text;
+            }
+        } catch (err) {
+            log(`Error: ${err.message}`);
+        }
+    }
+
+    async function fetchPublicKey() {
+        const res = await fetchApi('/auth/public-key');
+        return res.publicKey;
+    }
+
+    async function encryptWithPublicKey(publicKeyPem, plaintext) {
+        const pemBody = publicKeyPem
+            .replace(/-----BEGIN PUBLIC KEY-----/g, '')
+            .replace(/-----END PUBLIC KEY-----/g, '')
+            .replace(/\s/g, '');
+        const binary = Uint8Array.from(atob(pemBody), c => c.charCodeAt(0));
+        const key = await crypto.subtle.importKey(
+            'spki',
+            binary,
+            { name: 'RSA-OAEP', hash: 'SHA-256' },
+            false,
+            ['encrypt']
+        );
+        const encrypted = await crypto.subtle.encrypt(
+            { name: 'RSA-OAEP', hash: 'SHA-256' },
+            key,
+            new TextEncoder().encode(plaintext)
+        );
+        const bytes = new Uint8Array(encrypted);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary);
+    }
+
+    async function buildEncryptedAuthPayload(username, password, email) {
+        const publicKey = await fetchPublicKey();
+        const payload = {
+            encryptedUsername: await encryptWithPublicKey(publicKey, username),
+            encryptedPassword: await encryptWithPublicKey(publicKey, password)
+        };
+        if (email !== undefined && email !== null) {
+            payload.encryptedEmail = await encryptWithPublicKey(publicKey, email);
+        }
+        return payload;
+    }
+
+    async function register() {
+        const u = document.getElementById('username').value;
+        const p = document.getElementById('password').value;
+        const body = await buildEncryptedAuthPayload(u, p, `${u}@test.com`);
+        const res = await fetchApi('/auth/register', 'POST', body);
+        log(`Register`, res);
+    }
+
+    async function login() {
+        const u = document.getElementById('username').value;
+        const p = document.getElementById('password').value;
+        const body = await buildEncryptedAuthPayload(u, p);
+        const res = await fetchApi('/auth/login', 'POST', body);
+        if (typeof res === 'string' && !res.includes('Error')) {
+            token = res;
+            document.getElementById('tokenDisplay').innerText = token.substring(0, 10) + '...';
+            log(`Logged in successfully`);
+        } else {
+            log(`Login failed`, res);
+        }
+    }
+
+    async function getRooms() {
+        const res = await fetchApi('/lobby/all', 'GET');
+        log(`Rooms`, res);
+    }
+
+    async function createRoom() {
+        const name = document.getElementById('roomName').value;
+        const maxP = parseInt(document.getElementById('maxPlayers').value) || 6;
+        const minB = parseInt(document.getElementById('minBet').value) || 10;
+        const turnTime = parseInt(document.getElementById('turnTimeLimit').value) || 30000;
+        const res = await fetchApi('/lobby/create', 'POST', { 
+            name: name, 
+            isPrivate: false, 
+            password: '',
+            maxPlayers: maxP,
+            minBet: minB,
+            turnTimeLimit: turnTime
+        });
+        log(`Created Room`, res);
+        if (res && res.name) {
+            document.getElementById('joinRoomName').value = res.name;
+        }
+    }
+
+    async function joinRoom() {
+        const name = document.getElementById('joinRoomName').value;
+        const res = await fetchApi('/lobby/join', 'POST', { roomName: name, password: '' });
+        log(`Joined Room`, res);
+        if (res && res.status) {
+            updateLobbyControls(res.status);
+        }
+        if (res && res.id) {
+            currentRoomId = res.id;
+            connectSSE(currentRoomId);
+        } else if (res && res.roomId) {
+            currentRoomId = res.roomId;
+            connectSSE(currentRoomId);
+        }
+    }
+
+    async function leaveRoom() {
+        if (!currentRoomId) return;
+        const res = await fetchApi(`/lobby/leave?roomId=${currentRoomId}`, 'POST');
+        log(`Left Room`, res);
+        if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+        }
+        currentRoomId = '';
+        currentRoomStatus = '';
+        updateLobbyControls('WAITING');
+        document.getElementById('joinRoomName').value = '';
+    }
+
+    async function takeSeat() {
+        if (!currentRoomId) return;
+        const seat = document.getElementById('seatNumber').value;
+        const res = await fetchApi(`/lobby/seat?roomId=${currentRoomId}&seatNumber=${seat}`, 'POST');
+        log(`Took Seat ${seat}`, res);
+    }
+
+    async function setReady(isReady) {
+        if (currentRoomStatus && currentRoomStatus !== 'WAITING') {
+            log(`Ready disabled while game status is ${currentRoomStatus}`);
+            return;
+        }
+        const res = await fetchApi(`/lobby/ready?roomId=${currentRoomId}&ready=${isReady}`, 'POST');
+        log(`Set Ready (${isReady})`, res);
+    }
+
+    let currentRoomStatus = '';
+
+    function updateLobbyControls(status) {
+        currentRoomStatus = status || '';
+        const waiting = status === 'WAITING';
+        const readyBtn = document.getElementById('readyBtn');
+        const notReadyBtn = document.getElementById('notReadyBtn');
+        if (readyBtn) readyBtn.disabled = !waiting;
+        if (notReadyBtn) notReadyBtn.disabled = !waiting;
+    }
+
+    function handleRoomState(data) {
+        if (data && data.status) {
+            updateLobbyControls(data.status);
+        }
+    }
+
+    async function gameAction(action) {
+        let path = `/game/${action}?roomId=${currentRoomId}`;
+        if (action === 'raise') {
+            const amount = document.getElementById('raiseAmount').value;
+            path += `&amount=${amount}`;
+        }
+        const res = await fetchApi(path, 'POST');
+        log(`Action ${action}`, res);
+    }
+
+    function connectSSE(roomId) {
+        if (eventSource) eventSource.close();
+        
+        eventSource = new EventSource(`${API_URL}/game/stream/${roomId}?token=${token}`);
+        
+        eventSource.addEventListener('INIT', (e) => {
+            try {
+                const data = JSON.parse(e.data);
+                handleRoomState(data);
+                log(`SSE INIT`, data);
+            } catch(err) {
+                log(`SSE INIT: ${e.data}`);
+            }
+        });
+        
+        eventSource.addEventListener('UPDATE', (e) => {
+            try {
+                const data = JSON.parse(e.data);
+                handleRoomState(data);
+                log(`SSE UPDATE`, data);
+            } catch(err) {
+                log(`SSE UPDATE: ${e.data}`);
+            }
+        });
+
+        eventSource.onerror = (e) => {
+            log(`SSE Error`);
+        };
+    }
+</script>
+
+</body>
+</html>

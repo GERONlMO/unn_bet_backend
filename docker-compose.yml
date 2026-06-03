@@ -1,0 +1,174 @@
+version: '3.8'
+
+services:
+  # 1. Железный Сейф (PostgreSQL) - хранит пользователей и их баланс (фишки)
+  postgres:
+    image: postgres:15-alpine
+    container_name: unn_bet_postgres
+    environment:
+      POSTGRES_USER: unn_user
+      POSTGRES_PASSWORD: unn_password
+      POSTGRES_DB: unn_bet_db
+    ports:
+      - "5432:5432" # Прокидываем порт наружу, чтобы IDEA могла подключиться к Сейфу
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - unn_bet_network
+
+  # 2. Быстрый Блокнот Крупье (Redis) - хранит текущие раздачи, ставки, карты на столе
+  redis:
+    image: redis:7-alpine
+    container_name: unn_bet_redis
+    ports:
+      - "6379:6379" # Прокидываем порт для подключения из IDEA
+    volumes:
+      - redis_data:/data
+    networks:
+      - unn_bet_network
+
+  # 3. Менеджер курьеров (Zookeeper) - координирует работу Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: unn_bet_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - unn_bet_network
+
+  # 4. Служба курьеров (Kafka) - передает сообщения (например, "Игрок А выиграл 1000 фишек")
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: unn_bet_kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - unn_bet_network
+
+  # 5. API Gateway
+  gateway-service:
+    build:
+      context: ./gateway-service
+    container_name: unn_bet_gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - JWT_SECRET=${JWT_SECRET}
+      - AUTH_SERVICE_HOST=auth-service
+      - WALLET_SERVICE_HOST=wallet-service
+      - GAME_SERVICE_HOST=game-service
+      - LOBBY_SERVICE_HOST=lobby-service
+    depends_on:
+      - auth-service
+      - wallet-service
+      - game-service
+      - lobby-service
+    networks:
+      - unn_bet_network
+
+  # 6. Auth Service
+  auth-service:
+    build:
+      context: ./auth-service
+    container_name: unn_bet_auth
+    ports:
+      - "8081:8081"
+    environment:
+      - JWT_SECRET=${JWT_SECRET}
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/unn_bet_db
+      - KAFKA_HOST=kafka:29092
+      - APP_ADMIN_USERNAMES=admin
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
+    depends_on:
+      - postgres
+      - kafka
+    networks:
+      - unn_bet_network
+
+  # 7. Wallet Service
+  wallet-service:
+    build:
+      context: ./wallet-service
+    container_name: unn_bet_wallet
+    ports:
+      - "8082:8082"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/unn_bet_db
+      - KAFKA_HOST=kafka:29092
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
+    depends_on:
+      - postgres
+      - kafka
+    networks:
+      - unn_bet_network
+
+  # 8. Game Service (игровая логика + SSE)
+  game-service:
+    build:
+      context: ./game-service
+    container_name: unn_bet_game
+    ports:
+      - "8083:8083"
+    environment:
+      - REDIS_HOST=redis
+      - KAFKA_HOST=kafka:29092
+      - WALLET_SERVICE_HOST=wallet-service
+      - AUTH_SERVICE_HOST=auth-service
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
+    depends_on:
+      - redis
+      - kafka
+      - auth-service
+    networks:
+      - unn_bet_network
+
+  # 9. Lobby Service (создание комнат, места, готовность)
+  lobby-service:
+    build:
+      context: ./lobby-service
+    container_name: unn_bet_lobby
+    ports:
+      - "8084:8084"
+    environment:
+      - REDIS_HOST=redis
+      - GAME_SERVICE_HOST=game-service
+      - WALLET_SERVICE_HOST=wallet-service
+      - AUTH_SERVICE_HOST=auth-service
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
+    depends_on:
+      - redis
+      - game-service
+      - auth-service
+    networks:
+      - unn_bet_network
+
+  # 10. Dozzle (Центр видеонаблюдения за логами)
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: unn_bet_dozzle
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8088:8080"
+    networks:
+      - unn_bet_network
+
+# Места для хранения данных (чтобы при перезапуске ничего не пропало)
+volumes:
+  postgres_data:
+  redis_data:
+
+# Единая сеть для всех домиков
+networks:
+  unn_bet_network:
+    driver: bridge

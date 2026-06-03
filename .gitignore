@@ -1,0 +1,100 @@
+# =============================================================================
+# UNN-Bet — что НЕ попадает в git (сборка, IDE, секреты, локальные оверрайды)
+# =============================================================================
+
+# --- Maven / Java ---
+target/
+*.jar
+*.war
+*.ear
+*.class
+*.exec
+hs_err_pid*
+replay_pid*
+
+# Maven wrapper: jar скачивается локально, properties — в репозитории
+.mvn/wrapper/maven-wrapper.jar
+
+# --- Gradle (на будущее) ---
+.gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# --- IDE ---
+.idea/
+*.iws
+*.iml
+*.ipr
+.vscode/
+*.swp
+*.swo
+*~
+
+# Eclipse / STS
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings/
+.springBeans
+.sts4-cache
+
+# NetBeans
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Секреты и локальная конфигурация (НЕ коммитить на сервер через git) ---
+.env
+.env.*
+!.env.example
+*.env
+secrets/
+credentials.json
+*.pem
+*.key
+*.p12
+*.jks
+
+# Локальные Spring-профили с паролями / токенами
+**/application-local.yml
+**/application-local.yaml
+**/application-local.properties
+**/application-*.local.yml
+**/application-*.local.properties
+
+# Docker: локальные оверрайды (порты, пароли, volumes)
+docker-compose.override.yml
+docker-compose.local.yml
+
+# --- Логи и временные файлы ---
+*.log
+logs/
+*.tmp
+*.bak
+*.orig
+
+# --- Frontend (если появится npm) ---
+node_modules/
+dist/
+.npm/
+
+# --- Отчёты и артефакты тестов вне target ---
+**/site/jacoco/
+coverage/
+*.lcov
+
+# --- Cursor / локальные заметки агента (не нужны на сервере) ---
+.cursor/
+agent-transcripts/
+
+# --- Прочее ---
+HELP.md

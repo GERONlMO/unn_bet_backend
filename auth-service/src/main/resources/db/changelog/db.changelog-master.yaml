@@ -1,0 +1,146 @@
+databaseChangeLog:
+  - changeSet:
+      id: "auth-users-v1"
+      author: "unn-bet"
+      validCheckSum: ANY
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            tableExists:
+              tableName: users
+      changes:
+        - createTable:
+            tableName: users
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: username
+                  type: VARCHAR(255)
+                  constraints:
+                    unique: true
+                    nullable: false
+              - column:
+                  name: password
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: email
+                  type: VARCHAR(255)
+              - column:
+                  name: uuid
+                  type: VARCHAR(255)
+                  constraints:
+                    unique: true
+              - column:
+                  name: games_played
+                  type: INT
+              - column:
+                  name: wins
+                  type: INT
+              - column:
+                  name: avatar
+                  type: TEXT
+              - column:
+                  name: best_win
+                  type: BIGINT
+              - column:
+                  name: registration_date
+                  type: TIMESTAMP
+              - column:
+                  name: role
+                  type: VARCHAR(32)
+                  defaultValue: USER
+                  constraints:
+                    nullable: false
+  - changeSet:
+      id: auth-users-profile-v2
+      author: unn-bet
+      validCheckSum: ANY
+      changes:
+        - addColumn:
+            tableName: users
+            columns:
+              - column:
+                  name: games_played
+                  type: INT
+                  defaultValueNumeric: 0
+        - addColumn:
+            tableName: users
+            columns:
+              - column:
+                  name: wins
+                  type: INT
+                  defaultValueNumeric: 0
+        - addColumn:
+            tableName: users
+            columns:
+              - column:
+                  name: avatar
+                  type: TEXT
+        - addColumn:
+            tableName: users
+            columns:
+              - column:
+                  name: best_win
+                  type: BIGINT
+                  defaultValueNumeric: 0
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            columnExists:
+              tableName: users
+              columnName: games_played
+  - changeSet:
+      id: auth-users-avatar-length-v3
+      author: unn-bet
+      validCheckSum: ANY
+      changes:
+        - modifyDataType:
+            tableName: users
+            columnName: avatar
+            newDataType: VARCHAR(512)
+      preConditions:
+        - onFail: MARK_RAN
+        - columnExists:
+            tableName: users
+            columnName: avatar
+  - changeSet:
+      id: auth-users-avatar-text-v4
+      author: unn-bet
+      validCheckSum: ANY
+      changes:
+        - modifyDataType:
+            tableName: users
+            columnName: avatar
+            newDataType: TEXT
+      preConditions:
+        - onFail: MARK_RAN
+        - columnExists:
+            tableName: users
+            columnName: avatar
+  - changeSet:
+      id: auth-users-role-v5
+      author: unn-bet
+      validCheckSum: ANY
+      changes:
+        - addColumn:
+            tableName: users
+            columns:
+              - column:
+                  name: role
+                  type: VARCHAR(32)
+                  defaultValue: USER
+                  constraints:
+                    nullable: false
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            columnExists:
+              tableName: users
+              columnName: role

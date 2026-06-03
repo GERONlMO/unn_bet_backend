@@ -1,0 +1,69 @@
+# Repairs stale Spring Data Redis secondary index "GameRoom" (SET members without GameRoom:{id} hashes).
+# Safe to run on prod DB 0; does not delete actual room data.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-lobby-maintenance-scripts
+data:
+  repair-index.sh: |
+    #!/bin/sh
+    set -eu
+    DB="${SPRING_DATA_REDIS_DATABASE:-0}"
+    RC="redis-cli -h $REDIS_HOST -p 6379 -a $REDIS_PASSWORD --no-auth-warning -n $DB"
+    echo "Repairing GameRoom index on Redis DB ${DB}..."
+    INDEX_SIZE=$($RC SCARD GameRoom)
+    KEY_COUNT=$($RC --scan --pattern 'GameRoom:*' | wc -l)
+    echo "Before: index=${INDEX_SIZE} keys=${KEY_COUNT}"
+    $RC SMEMBERS GameRoom | while read -r id; do
+      [ -z "$id" ] && continue
+      if [ "$($RC EXISTS "GameRoom:${id}")" = "0" ]; then
+        $RC SREM GameRoom "$id" >/dev/null
+        echo "Removed stale index entry: ${id}"
+      fi
+    done
+    INDEX_SIZE=$($RC SCARD GameRoom)
+    KEY_COUNT=$($RC --scan --pattern 'GameRoom:*' | wc -l)
+    echo "After: index=${INDEX_SIZE} keys=${KEY_COUNT}"
+    echo "Done."
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: redis-lobby-index-repair
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 600
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: repair
+              image: redis:7-alpine
+              env:
+                - name: REDIS_HOST
+                  valueFrom:
+                    configMapKeyRef:
+                      name: unn-bet-config
+                      key: REDIS_HOST
+                - name: REDIS_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: unn-bet-secrets
+                      key: REDIS_PASSWORD
+                - name: SPRING_DATA_REDIS_DATABASE
+                  value: "0"
+              command: ["/bin/sh", "/scripts/repair-index.sh"]
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+          volumes:
+            - name: scripts
+              configMap:
+                name: redis-lobby-maintenance-scripts
+                defaultMode: 0755

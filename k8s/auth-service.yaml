@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  labels:
+    app: auth-service
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8081"
+    spec:
+      containers:
+        - name: auth-service
+          image: cr.yandex/<REGISTRY_ID>/auth-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8081
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: unn-bet-config
+                  key: POSTGRES_HOST
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: unn-bet-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: unn-bet-secrets
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: unn-bet-secrets
+                  key: POSTGRES_DB
+            - name: KAFKA_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: unn-bet-config
+                  key: KAFKA_HOST
+            - name: KAFKA_USER
+              valueFrom:
+                secretKeyRef:
+                  name: unn-bet-secrets
+                  key: KAFKA_USER
+            - name: KAFKA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: unn-bet-secrets
+                  key: KAFKA_PASSWORD
+            - name: SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL
+              value: "SASL_PLAINTEXT"
+            - name: SPRING_KAFKA_PROPERTIES_SASL_MECHANISM
+              value: "SCRAM-SHA-512"
+            - name: SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG
+              valueFrom:
+                secretKeyRef:
+                  name: unn-bet-secrets
+                  key: KAFKA_SASL_JAAS_CONFIG
+            - name: APP_ADMIN_USERNAMES
+              valueFrom:
+                configMapKeyRef:
+                  name: unn-bet-config
+                  key: APP_ADMIN_USERNAMES
+            - name: INTERNAL_SERVICE_TOKEN
+              valueFrom:
+                configMapKeyRef:
+                  name: unn-bet-config
+                  key: INTERNAL_SERVICE_TOKEN
+<<<<<<< HEAD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: unn-bet-secrets
+                  key: JWT_SECRET
+            - name: AUTH_RSA_PRIVATE_KEY_PATH
+              value: "/etc/auth-rsa/private.pem"
+            - name: AUTH_RSA_PUBLIC_KEY_PATH
+              value: "/etc/auth-rsa/public.pem"
+            - name: AUTH_RSA_GENERATE_IF_MISSING
+              value: "false"
+            - name: AUTH_DB_POOL_SIZE
+              value: "20"
+          volumeMounts:
+            - name: auth-rsa-keys
+              mountPath: /etc/auth-rsa
+              readOnly: true
+=======
+>>>>>>> 8cb924ec371355204e582cfd5adef0ce5f64b746
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "768Mi"
+              cpu: "1000m"
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            periodSeconds: 15
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8081
+      targetPort: 8081
+      name: http
+  selector:
+    app: auth-service

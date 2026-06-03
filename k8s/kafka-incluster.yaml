@@ -1,0 +1,212 @@
+# DEPRECATED for prod — kept for local reference only. Prod uses Yandex Managed Kafka (see configmap KAFKA_HOST).
+# In-cluster Kafka (PLAINTEXT) for game-results events.
+# Yandex Managed Kafka requires SASL; apps connect without auth and block finishGame().
+#
+# Dual listeners: INTERNAL on localhost for controller/inter-broker (avoids K8s service
+# hairpin when the broker connects to its own ClusterIP), EXTERNAL via unn-bet-kafka:29092.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unn-bet-zookeeper
+  labels:
+    app: unn-bet-zookeeper
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: unn-bet-zookeeper
+  template:
+    metadata:
+      labels:
+        app: unn-bet-zookeeper
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: zookeeper
+          image: confluentinc/cp-zookeeper:7.4.0
+          ports:
+            - containerPort: 2181
+          volumeMounts:
+            - name: zookeeper-data
+              mountPath: /var/lib/zookeeper/data
+              subPath: data
+            - name: zookeeper-log
+              mountPath: /var/lib/zookeeper/log
+              subPath: log
+          env:
+            - name: ZOOKEEPER_CLIENT_PORT
+              value: "2181"
+            - name: ZOOKEEPER_TICK_TIME
+              value: "2000"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: zookeeper-data
+          persistentVolumeClaim:
+            claimName: unn-bet-zookeeper-data
+        - name: zookeeper-log
+          persistentVolumeClaim:
+            claimName: unn-bet-zookeeper-log
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: unn-bet-zookeeper-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: yc-network-hdd
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: unn-bet-zookeeper-log
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: yc-network-hdd
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: unn-bet-zookeeper
+spec:
+  selector:
+    app: unn-bet-zookeeper
+  ports:
+    - port: 2181
+      targetPort: 2181
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unn-bet-kafka
+  labels:
+    app: unn-bet-kafka
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: unn-bet-kafka
+  template:
+    metadata:
+      labels:
+        app: unn-bet-kafka
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:7.4.0
+          ports:
+            - containerPort: 29092
+              name: external
+            - containerPort: 9092
+              name: internal
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
+              subPath: data
+          env:
+            - name: KAFKA_BROKER_ID
+              value: "1"
+            - name: KAFKA_ZOOKEEPER_CONNECT
+              value: "unn-bet-zookeeper:2181"
+            - name: KAFKA_LISTENERS
+              value: "EXTERNAL://0.0.0.0:29092,INTERNAL://0.0.0.0:9092"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "EXTERNAL://unn-bet-kafka:29092,INTERNAL://127.0.0.1:9092"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "INTERNAL"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_DEFAULT_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_MIN_INSYNC_REPLICAS
+              value: "1"
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: "true"
+            - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+              value: "0"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          startupProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - kafka-broker-api-versions --bootstrap-server 127.0.0.1:9092
+            failureThreshold: 30
+            periodSeconds: 10
+            timeoutSeconds: 15
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - kafka-broker-api-versions --bootstrap-server 127.0.0.1:9092
+            periodSeconds: 10
+            timeoutSeconds: 15
+          livenessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - kafka-broker-api-versions --bootstrap-server 127.0.0.1:9092
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 15
+      volumes:
+        - name: kafka-data
+          persistentVolumeClaim:
+            claimName: unn-bet-kafka-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: unn-bet-kafka-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: yc-network-hdd
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: unn-bet-kafka
+spec:
+  selector:
+    app: unn-bet-kafka
+  ports:
+    - port: 29092
+      targetPort: 29092

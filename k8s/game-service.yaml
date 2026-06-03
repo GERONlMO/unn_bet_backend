@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: game-service
+  labels:
+    app: game-service
+spec:
+  # Single replica: SSE subscribers live in pod memory; multiple pods break game actions (409/400).
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: game-service
+  template:
+    metadata:
+      labels:
+        app: game-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8083"
+    spec:
+      containers:
+        - name: game-service
+          image: cr.yandex/<REGISTRY_ID>/game-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8083
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: unn-bet-config
+                  key: REDIS_HOST
+            - name: KAFKA_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: unn-bet-config
+                  key: KAFKA_HOST
+            - name: KAFKA_USER
+              valueFrom:
+                secretKeyRef:
+                  name: unn-bet-secrets
+                  key: KAFKA_USER
+            - name: KAFKA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: unn-bet-secrets
+                  key: KAFKA_PASSWORD
+            - name: SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL
+              value: "SASL_PLAINTEXT"
+            - name: SPRING_KAFKA_PROPERTIES_SASL_MECHANISM
+              value: "SCRAM-SHA-512"
+            - name: SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG
+              valueFrom:
+                secretKeyRef:
+                  name: unn-bet-secrets
+                  key: KAFKA_SASL_JAAS_CONFIG
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: unn-bet-secrets
+                  key: REDIS_PASSWORD
+            - name: SPRING_DATA_REDIS_DATABASE
+              value: "0"
+            - name: WALLET_SERVICE_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: unn-bet-config
+                  key: WALLET_SERVICE_HOST
+            - name: AUTH_SERVICE_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: unn-bet-config
+                  key: AUTH_SERVICE_HOST
+            - name: INTERNAL_SERVICE_TOKEN
+              valueFrom:
+                configMapKeyRef:
+                  name: unn-bet-config
+                  key: INTERNAL_SERVICE_TOKEN
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "768Mi"
+              cpu: "1000m"
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8083
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8083
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8083
+            periodSeconds: 15
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: game-service
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8083
+      targetPort: 8083
+      name: http
+  selector:
+    app: game-service

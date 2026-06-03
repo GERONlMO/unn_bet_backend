@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lobby-service
+  labels:
+    app: lobby-service
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: lobby-service
+  template:
+    metadata:
+      labels:
+        app: lobby-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8084"
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: lobby-service
+      containers:
+        - name: lobby-service
+          image: cr.yandex/<REGISTRY_ID>/lobby-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8084
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: unn-bet-config
+                  key: REDIS_HOST
+            - name: GAME_SERVICE_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: unn-bet-config
+                  key: GAME_SERVICE_HOST
+            - name: WALLET_SERVICE_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: unn-bet-config
+                  key: WALLET_SERVICE_HOST
+            - name: AUTH_SERVICE_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: unn-bet-config
+                  key: AUTH_SERVICE_HOST
+            - name: INTERNAL_SERVICE_TOKEN
+              valueFrom:
+                configMapKeyRef:
+                  name: unn-bet-config
+                  key: INTERNAL_SERVICE_TOKEN
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: unn-bet-secrets
+                  key: REDIS_PASSWORD
+            - name: SPRING_DATA_REDIS_DATABASE
+              value: "0"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "768Mi"
+              cpu: "1000m"
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8084
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8084
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8084
+            periodSeconds: 15
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lobby-service
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8084
+      targetPort: 8084
+      name: http
+  selector:
+    app: lobby-service
